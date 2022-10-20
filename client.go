@@ -1,3 +1,20 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 package clickhouse
 
 import (
@@ -50,12 +67,12 @@ func (c *client) Connect() error {
 			var d net.Dialer
 			return d.DialContext(ctx, "tcp", addr)
 		},
-		Debug: true,
+		Debug: false,
 		Debugf: func(format string, v ...interface{}) {
 			fmt.Printf(format, v)
 		},
 		Settings: clickhouse.Settings{
-			"max_execution_time": 60,
+			"max_execution_time": 600,
 		},
 		Compression: &clickhouse.Compression{
 			Method: clickhouse.CompressionLZ4,
@@ -67,21 +84,23 @@ func (c *client) Connect() error {
 		ConnOpenStrategy: clickhouse.ConnOpenInOrder,
 	})
 	if err != nil {
-		c.log.Errorw("can not connect ck server", "host", c.config.Host)
+		c.log.Errorw("can not connect clickhouse server", "host", c.config.Host)
 		return err
 	}
 	if err := conn.Ping(context.Background()); err != nil {
-		c.log.Errorf("connect ck server fail, err: %v", err)
+		c.log.Errorf("connect clickhouse server failed, err: %v", err)
 		return err
 	} else {
-		c.log.Info("connect ck server successful")
+		c.log.Info("connect clickhouse server successful")
 	}
 
 	c.Conn = conn
 	return nil
 }
 
-func (c *client) Close() error { return nil }
+func (c *client) Close() error {
+	return c.Conn.Close()
+}
 
 func (c *client) Publish(_ context.Context, batch publisher.Batch) error {
 	st := c.observer
@@ -109,8 +128,7 @@ func (c *client) String() string {
 }
 
 func (c *client) getTableConf() tableConf {
-
-	tc := make(tableConf)
+	tc := make(tableConf, len(c.config.Tables))
 	for _, v := range c.config.Tables {
 		tc[v.Table] = v.Columns
 	}
@@ -118,9 +136,9 @@ func (c *client) getTableConf() tableConf {
 	return tc
 }
 
+// split table rows
 func (c *client) getBatchRows(events []publisher.Event) batchRows {
 	conf := c.getTableConf()
-	// fmt.Printf("========>  %+v", conf)
 
 	batchs := make(batchRows)
 	for _, ev := range events {
@@ -128,7 +146,7 @@ func (c *client) getBatchRows(events []publisher.Event) batchRows {
 		fstr := fmt.Sprintf("%s", fields)
 		tableT := ftField{}
 		if err := json.Unmarshal([]byte(fstr), &tableT); err != nil {
-			c.log.Errorf("parse field json fail, err: %v", err)
+			c.log.Errorf("parse field json failed, err: %v", err)
 			continue
 		}
 		tableName := tableT.Table
@@ -137,17 +155,15 @@ func (c *client) getBatchRows(events []publisher.Event) batchRows {
 		mstr := fmt.Sprintf("%s", message)
 		messageT := make(map[string]interface{})
 		if err := json.Unmarshal([]byte(mstr), &messageT); err != nil {
-			c.log.Errorf("parse message json fail, err: %v", err)
-			continue
-		}
-		// fmt.Printf("==message=> %v \n\n", messageT)
-		row, err := filterRow(conf[tableName], messageT)
-		if err != nil {
-			c.log.Errorf("filter message column fail, err: %v", err)
+			c.log.Errorf("parse message json failed, err: %v", err)
 			continue
 		}
 
-		// fmt.Printf("=row==> %v \n\n", row)
+		row, err := filterRow(conf[tableName], messageT)
+		if err != nil {
+			c.log.Errorf("filter message column failed, err: %v", err)
+			continue
+		}
 
 		lineRow := make([][]interface{}, 0)
 		if _, ok := batchs[tableName]; !ok {
@@ -166,20 +182,18 @@ func (c *client) getBatchRows(events []publisher.Event) batchRows {
 	return batchs
 }
 
-// 匹配指定的字段
 func filterRow(column []string, row map[string]interface{}) (line []interface{}, err error) {
 	for _, v := range column {
 		if data, ok := row[v]; ok {
 			line = append(line, data)
 		} else {
-			return nil, errors.New("filter column fail, column: " + v)
+			return nil, errors.New("filter column failed, column: " + v)
 		}
 	}
 	return
 }
 
 func (c *client) sendToTables(v tableData) error {
-
 	tableName := v.Table
 	columnStr := strings.Join(v.Columns, ",")
 	sql := fmt.Sprintf("INSERT INTO %s.%s (%s) VALUES ", c.config.Db, tableName, columnStr)
@@ -188,6 +202,7 @@ func (c *client) sendToTables(v tableData) error {
 	for _, line := range v.Rows {
 		valueStr := "("
 		for _, column := range line {
+			//nested type
 			if reflect.TypeOf(column).String() == "[]interface {}" {
 				valueStr += "[" + generateQuotaStr(column.([]interface{})) + "],"
 			} else {
@@ -199,22 +214,17 @@ func (c *client) sendToTables(v tableData) error {
 	}
 
 	sql = strings.TrimRight(sql, ",")
-	fmt.Printf("\n num: %d,  sql: %s \n", num, sql)
+	c.log.Debugf("batch insert num: %d, sql: %s \n", num, sql)
+	c.log.Infof("batch insert num: %d \n", num)
 
 	return c.Conn.Exec(context.Background(), sql)
 }
 
 func generateQuotaStr(data []interface{}) string {
 	var str string
-	// fmt.Printf("%+v \n", data)
 	for _, v := range data {
-		if reflect.TypeOf(v).String() == "float64" {
-			str += fmt.Sprintf("'%d',", v)
-		} else {
-			str += fmt.Sprintf("'%s',", v)
-		}
+		str += fmt.Sprintf("'%s',", v)
 	}
 	str = strings.TrimRight(str, ",")
-	// fmt.Printf("%+v \n", str)
 	return str
 }

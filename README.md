@@ -10,7 +10,7 @@ git clone git@github.com:elastic/beats.git
 ```
 Install filebeat-clickhouse output
 ```
-go get -u github.com/codytan/filebeat-clickhouse
+go get github.com/codytan/filebeat-clickhouse
 ```
 Modify beats outputs includes, add clickhouse output
 ```

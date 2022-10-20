@@ -19,7 +19,6 @@ package clickhouse
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/elastic/beats/v7/libbeat/beat"
 	"github.com/elastic/beats/v7/libbeat/outputs"
@@ -27,13 +26,6 @@ import (
 	cjson "github.com/elastic/beats/v7/libbeat/outputs/codec/json"
 	"github.com/elastic/elastic-agent-libs/config"
 )
-
-type consoleEvent struct {
-	Timestamp time.Time `json:"@timestamp" struct:"@timestamp"`
-
-	// Note: stdlib json doesn't support inlining :( -> use `codec: 2`, to generate proper event
-	Fields interface{} `struct:",inline"`
-}
 
 type ftField struct {
 	Table string `json:"table"`
@@ -60,8 +52,6 @@ func makeClickHouse(_ outputs.IndexManager, beat beat.Info, observer outputs.Obs
 		return outputs.Fail(err)
 	}
 
-	fmt.Printf("======> %+v \n", config)
-
 	var enc codec.Codec
 	if config.Codec.Namespace.IsSet() {
 		enc, err = codec.CreateEncoder(beat, config.Codec)
@@ -70,14 +60,11 @@ func makeClickHouse(_ outputs.IndexManager, beat beat.Info, observer outputs.Obs
 		}
 	} else {
 		enc = cjson.New(beat.Version, cjson.Config{
-			Pretty:     config.Pretty,
 			EscapeHTML: false,
 		})
 	}
 
 	index := beat.Beat
-	// fmt.Printf("======> %+v", index)
-
 	c, err := newClient(config, observer, enc, index)
 	if err != nil {
 		return outputs.Fail(fmt.Errorf("clickhouse output initialization failed with: %v", err))
