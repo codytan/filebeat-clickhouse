@@ -106,21 +106,53 @@ func (c *client) Publish(_ context.Context, batch publisher.Batch) error {
 	st := c.observer
 	events := batch.Events()
 
-	batchData := c.getBatchRows(events)
-
-	for _, v := range batchData {
-		st.NewBatch(len(v.Rows))
-		droped := 0
-		if err := c.sendToTables(v); err != nil {
-			c.log.Errorf("send table err: %v", err)
-			droped += len(v.Rows)
-		}
-		st.Dropped(droped)
-		st.Acked(len(v.Rows) - droped)
+	batchData, succEventNum := c.getBatchRows(events)
+	if succEventNum == 0 {
+		batch.Drop()
+		c.log.Errorf("batch drop")
+		return errors.New("batch filter row failed, batch droped")
 	}
 
-	batch.ACK()
-	return nil
+	st.NewBatch(len(events))
+	filterDroped := len(events) - succEventNum
+	if filterDroped > 0 {
+		st.Dropped(filterDroped)
+	}
+
+	retryEvents := make([]publisher.Event, 0)
+	sendDroped := 0
+	var lastErr error
+	for _, v := range batchData {
+
+		if err := c.sendToTables(v); err != nil {
+			c.log.Errorf("send to table err: %v", err)
+			lastErr = err
+
+			// dial tcp 10.32.20.146:9000: connect: connection refused
+			if strings.Contains(fmt.Sprintf("%s", err), "connect: connection refused") {
+				for _, e_key := range v.EventKeys {
+					retryEvents = append(retryEvents, events[e_key])
+				}
+				c.log.Errorf("connect ck refused, will retry evnet: %d", len(v.EventKeys))
+			} else { //other error
+				sendDroped += len(v.EventKeys)
+			}
+		} else {
+			c.log.Infof("insert num %d", len(v.EventKeys))
+		}
+	}
+
+	st.Dropped(sendDroped)
+	st.Acked(len(events) - filterDroped - sendDroped)
+
+	if len(retryEvents) > 0 {
+		batch.RetryEvents(retryEvents)
+		c.log.Errorf("batch retry evnet: %d", len(retryEvents))
+	} else {
+		batch.ACK()
+	}
+
+	return lastErr
 }
 
 func (c *client) String() string {
@@ -137,11 +169,12 @@ func (c *client) getTableConf() tableConf {
 }
 
 // split table rows
-func (c *client) getBatchRows(events []publisher.Event) batchRows {
+func (c *client) getBatchRows(events []publisher.Event) (batchRows, int) {
 	conf := c.getTableConf()
 
 	batchs := make(batchRows)
-	for _, ev := range events {
+	succEventNum := 0
+	for e_key, ev := range events {
 		fields, _ := ev.Content.GetValue("fields")
 		fstr := fmt.Sprintf("%s", fields)
 		tableT := ftField{}
@@ -165,21 +198,29 @@ func (c *client) getBatchRows(events []publisher.Event) batchRows {
 			continue
 		}
 
+		succEventNum++
 		lineRow := make([][]interface{}, 0)
+		eventKeys := make([]int, 0)
 		if _, ok := batchs[tableName]; !ok {
 			lineRow = append(lineRow, row)
+			eventKeys = append(eventKeys, e_key)
 		} else {
 			lineRow = batchs[tableName].Rows
 			lineRow = append(lineRow, row)
+
+			eventKeys = batchs[tableName].EventKeys
+			eventKeys = append(eventKeys, e_key)
 		}
 		batchs[tableName] = tableData{
-			Table:   tableName,
-			Columns: conf[tableName],
-			Rows:    lineRow,
+			Table:     tableName,
+			Columns:   conf[tableName],
+			Rows:      lineRow,
+			EventKeys: eventKeys,
 		}
 
 	}
-	return batchs
+
+	return batchs, succEventNum
 }
 
 func filterRow(column []string, row map[string]interface{}) (line []interface{}, err error) {
@@ -214,8 +255,7 @@ func (c *client) sendToTables(v tableData) error {
 	}
 
 	sql = strings.TrimRight(sql, ",")
-	c.log.Debugf("batch insert num: %d, sql: %s \n", num, sql)
-	c.log.Infof("batch insert num: %d \n", num)
+	c.log.Debugf("batch insert num: %d, sql: %s", num, sql)
 
 	return c.Conn.Exec(context.Background(), sql)
 }

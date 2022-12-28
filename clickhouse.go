@@ -36,9 +36,10 @@ type tableConf map[string][]string
 type batchRows map[string]tableData
 
 type tableData struct {
-	Table   string
-	Columns []string
-	Rows    [][]interface{}
+	Table     string
+	Columns   []string
+	Rows      [][]interface{}
+	EventKeys []int
 }
 
 func init() {
