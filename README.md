@@ -30,7 +30,8 @@ make
 ```
    
 ## Output Configure
-Config tables: Specify the table and columns. Need to be exactly the same as the field in log file(JSON row format), for compatibility with data types with SQL, the JSON field must be string type
+Config tables: Specify the table and columns. Need to be exactly the same as the field in log file(JSON row format), for compatibility with data types with SQL, the JSON field must be string type.
+When clickhouse is not available, failed events can be retried (Filebeat will be retried indefinitely) and other errors will be dropped.
 
 ```
 filebeat.inputs:
@@ -55,7 +56,7 @@ output.clickhouse:
   user_name: "default" 
   pass_word: ""
   batch_size: 1000
-  max_retries: 5
+  max_retries: -1
   tables: #insert data config, specify the table and columns. Need to be exactly the same as the field in log file(JSON row format), for compatibility with data types with SQL, the JSON field must be string type
     - table: "table_name"
       columns: ["EventTime", "Label.Label", "Label.Count"] #suport nested type
