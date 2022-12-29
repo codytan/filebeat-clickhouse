@@ -129,7 +129,8 @@ func (c *client) Publish(_ context.Context, batch publisher.Batch) error {
 			lastErr = err
 
 			// dial tcp 10.32.20.146:9000: connect: connection refused
-			if strings.Contains(fmt.Sprintf("%s", err), "connect: connection refused") {
+			// dial tcp: lookup clickhouse on 127.0.0.11:53: server misbehaving"
+			if strings.Contains(fmt.Sprintf("%s", err), "connection refused") || strings.Contains(fmt.Sprintf("%s", err), "server misbehaving") {
 				for _, e_key := range v.EventKeys {
 					retryEvents = append(retryEvents, events[e_key])
 				}
