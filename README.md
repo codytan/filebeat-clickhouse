@@ -68,3 +68,8 @@ queue.mem:
   flush.min_events: 1000 #send event num per batch
   flush.timeout: 5s #send event interval
 ```
+
+## Use
+```
+./filebeat -c default.yml
+```
